@@ -51,6 +51,24 @@ logLevel: error # or "debug", "info", etc.
 
 ```
 
+## DML Table
+
+```
+CREATE TABLE public.trades_binance (
+	time timestamptz NOT NULL,
+	maker bool NOT NULL,	
+	symbol text NOT NULL,
+	price numeric NOT NULL,
+	size numeric NOT NULL,
+	qty_trades numeric NOT NULL,
+	id numeric NOT NULL
+
+);
+CREATE INDEX trades_symbol_idx ON public.trades_binance (symbol,id);
+CREATE INDEX trades_event_symbol_idx ON public.trades_binance (symbol,time);
+
+```
+
 ## Contributing
 Feel free to contribute by opening issues or pull requests. Your feedback and suggestions are highly appreciated.
 
