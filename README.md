@@ -14,7 +14,7 @@ Datafeeder is a WebSocket-based tool written in Go for fetching candle data from
 1. **Clone the repository:**
 
     ```bash
-    git clone https://github.com/yourusername/datafeeder-ws-binance-go.git
+    git clone https://github.com/siqueiraa/datafeeder-ws-binance-go.git
     cd datafeeder-ws-binance-go
     ```
 
@@ -49,11 +49,12 @@ dbname: dbname
 sslmode: disable
 logLevel: error # or "debug", "info", etc.
 
+```
 
-Contributing
+## Contributing
 Feel free to contribute by opening issues or pull requests. Your feedback and suggestions are highly appreciated.
 
-License
+## License
 This project is licensed under the MIT License.
 
 
