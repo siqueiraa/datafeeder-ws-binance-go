@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgtype"
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
+	"github.com/shopspring/decimal"
 	"gopkg.in/yaml.v2"
 )
 
@@ -178,6 +179,8 @@ func FetchDataFromTable(query string, wg *sync.WaitGroup) ([]map[string]interfac
 	// Display the elapsed time
 	fmt.Printf("Select took %s to execute\n", tempoDecorrido)
 
+	result = formataToNativeType(result)
+
 	return result, nil
 }
 
@@ -189,8 +192,9 @@ func IsPoolConnected(pool *pgxpool.Pool) bool {
 
 // Function to generate a random number within a given range
 func generateRandomNumber(min, max int) int {
-	rand.Seed(time.Now().UnixNano())
-	return rand.Intn(max-min+1) + min
+	source := rand.NewSource(time.Now().UnixNano())
+	rnd := rand.New(source)
+	return rnd.Intn(max-min+1) + min
 }
 
 // Function to generate a unique temporary table name
@@ -297,6 +301,66 @@ func buildUpdateValuesWithExcluded(columns []string, primaryKey []string) string
 		}
 	}
 	return strings.Join(updateAssignments, ", ")
+}
+
+func formataToNativeType(data []map[string]interface{}) []map[string]interface{} {
+	newData := make([]map[string]interface{}, len(data))
+
+	for i, row := range data {
+		newRow := make(map[string]interface{}, len(row))
+		for col, value := range row {
+			switch v := value.(type) {
+			case pgtype.Timestamptz:
+				if v.Status == pgtype.Present {
+					newRow[col] = v.Time
+				}
+			case pgtype.Float8:
+				if v.Status == pgtype.Present {
+					newRow[col] = v.Float
+				}
+			case pgtype.Int4:
+				if v.Status == pgtype.Present {
+					newRow[col] = int(v.Int)
+				}
+			case pgtype.Bool:
+				if v.Status == pgtype.Present {
+					newRow[col] = v.Bool
+				}
+			case pgtype.Text:
+				if v.Status == pgtype.Present {
+					newRow[col] = v.String
+				}
+			case pgtype.Numeric:
+				if v.Status == pgtype.Present {
+					// Convert the Numeric value to a decimal.Decimal
+					decimalVal, err := v.Value()
+					if err != nil {
+						// Handle the error
+						fmt.Printf("Error converting Numeric to decimal.Decimal: %v\n", err)
+						continue
+					}
+
+					// Convert driver.Value (string) to decimal.Decimal
+					decimalValue, err := decimal.NewFromString(decimalVal.(string))
+					if err != nil {
+						// Handle the error
+						fmt.Printf("Error converting string to decimal.Decimal: %v\n", err)
+						continue
+					}
+
+					// Convert decimal.Decimal to float64
+					floatVal, _ := decimalValue.Float64()
+					newRow[col] = floatVal
+				}
+
+			default:
+				newRow[col] = value
+			}
+		}
+		newData[i] = newRow
+	}
+
+	return newData
 }
 
 func formatToBinaryData(data []map[string]interface{}, columnOrder []string) []map[string]interface{} {

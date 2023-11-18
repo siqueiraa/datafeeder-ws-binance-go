@@ -3,20 +3,71 @@ package main
 import (
 	"bot_test/db"
 	"bot_test/util"
+	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
 	"time"
 
 	"github.com/adshao/go-binance/v2"
+	"github.com/adshao/go-binance/v2/futures"
+	"golang.org/x/time/rate"
 )
 
 var wg sync.WaitGroup
+var wgCandles sync.WaitGroup
+var futuresClient *futures.Client
 var cResults chan map[string]interface{}
+var cCandlesResult chan []map[string]interface{}
 var cSaveToDb chan []map[string]interface{}
 
+var duration = time.Second * 60 / 600
+var limiter = rate.NewLimiter(rate.Every(duration), 1)
+
+func get_candles_rest(symbol, tf string, startTime float64) error {
+
+	all_candles := make([]map[string]interface{}, 0)
+
+	klines, err := futuresClient.NewKlinesService().Symbol(symbol).
+		Interval(tf).Limit(1500).StartTime(int64(startTime)).Do(context.Background())
+
+	if err != nil {
+		fmt.Println(err)
+		return err
+	}
+
+	for _, klineData := range klines {
+		tz_time, err := util.Convert_ts_to_tz(klineData.OpenTime, "America/Sao_Paulo")
+
+		if err != nil {
+			fmt.Println("Error conversion time:", err)
+			return err
+		}
+
+		map_to_Db := make(map[string]interface{})
+
+		map_to_Db["time"] = tz_time
+		map_to_Db["open"] = klineData.Open
+		map_to_Db["high"] = klineData.High
+		map_to_Db["low"] = klineData.Low
+		map_to_Db["close"] = klineData.Close
+		map_to_Db["volume"] = klineData.Volume
+		map_to_Db["symbol"] = symbol
+		map_to_Db["time_frame"] = tf
+
+		all_candles = append(all_candles, map_to_Db)
+
+	}
+
+	cCandlesResult <- all_candles
+
+	return nil
+
+}
+
 func get_candles(symbol, tf string) {
-	wsKlineHandler := func(event *binance.WsKlineEvent) {
+	wsKlineHandler := func(event *futures.WsKlineEvent) {
 		tz_time_event, err := util.Convert_ts_to_tz(event.Time, "America/Sao_Paulo")
 
 		if err != nil {
@@ -49,13 +100,12 @@ func get_candles(symbol, tf string) {
 	errHandler := func(err error) {
 		fmt.Println("Error:", err)
 	}
-	doneC, _, err := binance.WsKlineServe(symbol, tf, wsKlineHandler, errHandler)
+	_, _, err := futures.WsKlineServe(symbol, tf, wsKlineHandler, errHandler)
 	if err != nil {
 		fmt.Println("Error 2:", err)
 		return
 	}
 
-	<-doneC
 }
 
 func waitResult() {
@@ -69,6 +119,40 @@ func waitResult() {
 
 		}
 	}
+}
+
+func getMaxTimes(time_frame string) (map[string]float64, error) {
+	// Execute the query
+	query := fmt.Sprintf("SELECT symbol, (extract('epoch' from max(time))) * 1000 as max_time FROM candles_binance cb WHERE time_frame = '%s' GROUP BY symbol", time_frame)
+	rows, err := db.FetchDataFromTable(query, &wg)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create a map to store the results
+	result := make(map[string]float64)
+
+	// Iterate over the rows and populate the map
+	for _, row := range rows {
+		var symbol string
+
+		// Modify the following lines according to your actual data structure
+		// Example assuming your map has keys "symbol" and "max_time"
+		symbolValue, ok := row["symbol"].(string)
+		if !ok {
+			return nil, errors.New("failed to convert symbol to string")
+		}
+		maxTimeValue, ok := row["max_time"].(float64)
+		if !ok {
+			return nil, errors.New("failed to convert max_time to int64")
+		}
+
+		symbol = symbolValue
+
+		result[symbol] = maxTimeValue
+	}
+
+	return result, nil
 }
 
 func getPairs() ([]string, error) {
@@ -165,6 +249,111 @@ func saveToDb() {
 	}
 }
 
+func managerCandles(pairs []string) (max_time_ret time.Time, err error) {
+	primaryKey := []string{"symbol", "time_frame", "time"}
+
+	max_time, err := getMaxTimes("1m")
+
+	if err != nil {
+		log.Fatalf("Failed initial check: %v", err)
+		panic("Error to get max time")
+	}
+
+	all_results_candles := make([]map[string]interface{}, 0)
+	cCandlesResult = make(chan []map[string]interface{}, 20)
+
+	go func() {
+		for {
+			select {
+			case resultado, ok := <-cCandlesResult:
+				if !ok {
+					// The channel is closed, exit the goroutine
+					return
+				}
+				all_results_candles = append(all_results_candles, resultado...)
+
+			}
+		}
+	}()
+
+	wgCandles.Add(len(pairs))
+	for _, symbol := range pairs {
+		go func(symbol string) {
+			defer wgCandles.Done() // Ensure wg.Done() is called for each goroutine
+
+			// Reserve a token
+			reservation := limiter.Reserve()
+			if !reservation.OK() {
+				// Could not get a token, log an error and return
+				fmt.Println("Rate limiter error: could not acquire token")
+				return
+			}
+
+			// Sleep for the reservation delay, i.e., wait for the next available token
+
+			log.Println(symbol, "Get delay", reservation.Delay())
+			time.Sleep(reservation.Delay())
+
+			max_time_symbol := max_time[symbol]
+
+			// Call your get_candles function here
+			get_candles_rest(symbol, "1m", max_time_symbol)
+		}(symbol)
+	}
+
+	wgCandles.Wait()
+	close(cCandlesResult)
+	time.Sleep(100 * time.Millisecond)
+
+	if len(all_results_candles) > 0 {
+
+		inicio := time.Now()
+		err = db.InsertBulkData(all_results_candles, "candles_binance", primaryKey)
+		if err != nil {
+			fmt.Println("Error insert:", err)
+			return max_time_ret, err
+		}
+		fim := time.Now()
+		// Calculate the time difference
+		tempoDecorrido := fim.Sub(inicio).Seconds()
+		formattedTime := fmt.Sprintf("%.3f", tempoDecorrido)
+
+		// Print the elapsed time
+		log.Println("Insert Time", formattedTime, "Registers:", len(all_results_candles))
+		max_time_ret, err := util.GetMinTime(all_results_candles)
+
+		if err != nil {
+			fmt.Println("Error:", err)
+			return max_time_ret, err
+		}
+		return max_time_ret, nil
+	}
+	return max_time_ret, nil
+}
+
+func initial_check(pairs []string) {
+
+	max_time, err := managerCandles(pairs)
+	if err != nil {
+		log.Fatalf("Failed to initialize the database: %v", err)
+	}
+
+	// Get the current time
+	currentTime := time.Now()
+
+	// Calculate the time difference
+	timeDifference := currentTime.Sub(max_time)
+	minutesDifference := timeDifference.Minutes()
+
+	// Print the time difference
+	if minutesDifference > 120 {
+		initial_check(pairs)
+	} else {
+		log.Printf("Time difference: %v Minutes, finish initial check!\n", minutesDifference)
+
+	}
+}
+
 func main() {
 	err := db.InitDB()
 	if err != nil {
@@ -174,7 +363,11 @@ func main() {
 	cResults = make(chan map[string]interface{}, 20)
 	cSaveToDb = make(chan []map[string]interface{})
 
+	futuresClient = binance.NewFuturesClient("", "") // USDT-M Futures
+	fmt.Println(binance.RateLimitIntervalMinute)
+
 	pairs, _ := getPairs()
+	initial_check(pairs)
 	wg.Add(2)
 
 	fmt.Println(len(pairs), "Pares")
