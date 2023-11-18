@@ -6,8 +6,8 @@ Datafeeder is a WebSocket-based tool written in Go for fetching candle data from
 
 - WebSocket integration with Binance for fetching candle data.
 - Efficient bulk insertion of data into PostgreSQL database.
-- Future enhancements: retrieving Open Interest (OI) and Long/Short Ratio (LSR) data.
 - Sanitization of data to ensure integrity.
+- Future enhancements: retrieving Open Interest (OI) and Long/Short Ratio (LSR) data.
 
 ## Installation
 
