@@ -22,8 +22,7 @@ var cResults chan map[string]interface{}
 var cCandlesResult chan []map[string]interface{}
 var cSaveToDb chan []map[string]interface{}
 
-var duration = time.Second * 60 / 600
-var limiter = rate.NewLimiter(rate.Every(duration), 1)
+var limiter = rate.NewLimiter(rate.Limit(600), 1)
 
 func get_candles_rest(symbol, tf string, startTime float64) error {
 
@@ -98,7 +97,7 @@ func get_candles(symbol, tf string) {
 
 	}
 	errHandler := func(err error) {
-		fmt.Println("Error:", err)
+		log.Println("Error handle candles ws:", err)
 	}
 	_, _, err := futures.WsKlineServe(symbol, tf, wsKlineHandler, errHandler)
 	if err != nil {
@@ -285,7 +284,7 @@ func managerCandles(pairs []string) (max_time_ret time.Time, err error) {
 			reservation := limiter.Reserve()
 			if !reservation.OK() {
 				// Could not get a token, log an error and return
-				fmt.Println("Rate limiter error: could not acquire token")
+				log.Println("Rate limiter error: could not acquire token")
 				return
 			}
 
@@ -323,7 +322,7 @@ func managerCandles(pairs []string) (max_time_ret time.Time, err error) {
 		max_time_ret, err := util.GetMinTime(all_results_candles)
 
 		if err != nil {
-			fmt.Println("Error:", err)
+			log.Println("Error on insert registers on db:", err)
 			return max_time_ret, err
 		}
 		return max_time_ret, nil
